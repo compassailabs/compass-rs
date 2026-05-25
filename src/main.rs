@@ -33,32 +33,39 @@ async fn main() -> Result<()> {
     let bind: SocketAddr = cfg.bind.parse()?;
     let state = AppState::new(cfg).await?;
 
-    let snapshot_interval = Duration::from_secs(state.cfg.automation_snapshot_interval_secs);
-    let _snap = automation::workers::snapshot::spawn_snapshot_worker(
-        state.cfg.clone(),
-        state.arbitrum_sepolia.clone(),
-        state.snapshots.clone(),
-        snapshot_interval,
-    );
-    tracing::info!(
-        "automation snapshot worker spawned with interval = {}s",
-        snapshot_interval.as_secs()
-    );
+    if state.cfg.disable_automation {
+        tracing::warn!(
+            "COMPASS_DISABLE_AUTOMATION=1 — snapshot worker + cron NOT spawned \
+             (use for local dev against shared DB / on-chain state)"
+        );
+    } else {
+        let snapshot_interval = Duration::from_secs(state.cfg.automation_snapshot_interval_secs);
+        let _snap = automation::workers::snapshot::spawn_snapshot_worker(
+            state.cfg.clone(),
+            state.arbitrum_sepolia.clone(),
+            state.snapshots.clone(),
+            snapshot_interval,
+        );
+        tracing::info!(
+            "automation snapshot worker spawned with interval = {}s",
+            snapshot_interval.as_secs()
+        );
 
-    let cron_interval = Duration::from_secs(state.cfg.automation_cron_interval_secs);
-    let _cron = automation::scheduler::spawn_cron(
-        state.policies.clone(),
-        state.snapshots.clone(),
-        state.positions.clone(),
-        state.audit.clone(),
-        Some(state.position_fetcher.clone()),
-        Some(state.clone()),
-        cron_interval,
-    );
-    tracing::info!(
-        "automation cron spawned with interval = {}s",
-        cron_interval.as_secs()
-    );
+        let cron_interval = Duration::from_secs(state.cfg.automation_cron_interval_secs);
+        let _cron = automation::scheduler::spawn_cron(
+            state.policies.clone(),
+            state.snapshots.clone(),
+            state.positions.clone(),
+            state.audit.clone(),
+            Some(state.position_fetcher.clone()),
+            Some(state.clone()),
+            cron_interval,
+        );
+        tracing::info!(
+            "automation cron spawned with interval = {}s",
+            cron_interval.as_secs()
+        );
+    }
 
     let enable_debug_api = state.cfg.enable_debug_api;
     if enable_debug_api {

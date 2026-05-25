@@ -26,6 +26,18 @@ impl OpenAiCompatibleProvider {
             name: name.to_string(),
         }
     }
+
+    /// Build the `thinking` field for this provider's request body, if applicable.
+    /// Returns `{"type": "enabled"}` only when:
+    ///   - provider is DeepSeek (OpenAI rejects this field)
+    ///   - caller requested thinking via `req.thinking_budget_tokens.is_some()`
+    fn thinking_field_for(&self, req: &CompletionRequest) -> Option<Value> {
+        if self.name == "deepseek" && req.thinking_budget_tokens.is_some() {
+            Some(serde_json::json!({ "type": "enabled" }))
+        } else {
+            None
+        }
+    }
 }
 
 #[async_trait]
@@ -45,14 +57,17 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
         let messages = anthropic_to_openai_messages(&req.system, &req.messages);
         let tools = anthropic_to_openai_tools(req);
+        let thinking = self.thinking_field_for(req);
 
         let body = OpenAiRequest {
             model: &self.model,
             messages,
             max_tokens: Some(req.max_tokens),
             tools,
-            temperature: req.temperature,
+            // Thinking mode ignores temperature per DeepSeek docs — drop it.
+            temperature: if thinking.is_some() { None } else { req.temperature },
             stream: false,
+            thinking,
         };
 
         let resp = self
@@ -87,14 +102,16 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
         let messages = anthropic_to_openai_messages(&req.system, &req.messages);
         let tools = anthropic_to_openai_tools(req);
+        let thinking = self.thinking_field_for(req);
 
         let body = OpenAiRequest {
             model: &self.model,
             messages,
             max_tokens: Some(req.max_tokens),
             tools,
-            temperature: req.temperature,
+            temperature: if thinking.is_some() { None } else { req.temperature },
             stream: true,
+            thinking,
         };
 
         let resp = self
@@ -136,6 +153,11 @@ struct OpenAiRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     stream: bool,
+    /// DeepSeek v4-flash thinking mode toggle. Serializes as
+    /// `{"type": "enabled"}`. Only set for `provider_name == "deepseek"`;
+    /// OpenAI (and other compatibles) would reject this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -147,6 +169,12 @@ struct OpenAiMessage {
     tool_calls: Option<Vec<OpenAiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    /// DeepSeek v4-flash thinking mode requires prior assistant
+    /// `reasoning_content` to be echoed back on every subsequent turn —
+    /// otherwise it 400s with "reasoning_content … must be passed back".
+    /// Sibling field of `content` per DeepSeek wire format.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -172,6 +200,7 @@ fn anthropic_to_openai_messages(system: &str, msgs: &[ChatMessage]) -> Vec<OpenA
             content: Some(system.to_string()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         });
     }
 
@@ -182,6 +211,7 @@ fn anthropic_to_openai_messages(system: &str, msgs: &[ChatMessage]) -> Vec<OpenA
         };
 
         let mut text = String::new();
+        let mut reasoning = String::new();
         let mut tool_calls: Vec<OpenAiToolCall> = Vec::new();
         let mut tool_results: Vec<(String, String)> = Vec::new();
 
@@ -192,6 +222,12 @@ fn anthropic_to_openai_messages(system: &str, msgs: &[ChatMessage]) -> Vec<OpenA
                         text.push_str("\n\n");
                     }
                     text.push_str(t);
+                }
+                ContentBlock::Thinking { thinking, .. } => {
+                    if !reasoning.is_empty() {
+                        reasoning.push_str("\n\n");
+                    }
+                    reasoning.push_str(thinking);
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_calls.push(OpenAiToolCall {
@@ -216,6 +252,7 @@ fn anthropic_to_openai_messages(system: &str, msgs: &[ChatMessage]) -> Vec<OpenA
                     content: Some(content.clone()),
                     tool_calls: None,
                     tool_call_id: Some(id.clone()),
+                    reasoning_content: None,
                 });
             }
             if !text.is_empty() {
@@ -224,6 +261,7 @@ fn anthropic_to_openai_messages(system: &str, msgs: &[ChatMessage]) -> Vec<OpenA
                     content: Some(text),
                     tool_calls: None,
                     tool_call_id: None,
+                    reasoning_content: None,
                 });
             }
             continue;
@@ -238,6 +276,11 @@ fn anthropic_to_openai_messages(system: &str, msgs: &[ChatMessage]) -> Vec<OpenA
                 Some(tool_calls)
             },
             tool_call_id: None,
+            reasoning_content: if reasoning.is_empty() {
+                None
+            } else {
+                Some(reasoning)
+            },
         });
     }
 

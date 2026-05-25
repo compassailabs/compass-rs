@@ -53,6 +53,7 @@ pub async fn run_agent(
             tools: tools.clone(),
             max_tokens: MAX_TOKENS,
             temperature: None,
+            thinking_budget_tokens: None,
         };
         let resp = llm.complete(&req).await?;
 
@@ -86,7 +87,7 @@ pub async fn run_agent(
                         content: output,
                     });
                 }
-                ContentBlock::ToolResult { .. } => {}
+                ContentBlock::ToolResult { .. } | ContentBlock::Thinking { .. } => {}
             }
         }
 

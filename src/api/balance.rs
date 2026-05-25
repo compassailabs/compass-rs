@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::account::predict_address;
+use crate::account::predict_address_with_provider;
 use crate::api::error::ApiError;
 use crate::state::AppState;
 
@@ -37,19 +37,27 @@ async fn get_balance(
 
     let arc_state = state.arc.clone();
     let arbitrum_state = state.arbitrum_sepolia.clone();
-    let arc_rpc = cfg.arc_rpc_url.clone();
-    let arbitrum_rpc = cfg.arbitrum_sepolia_rpc_url.clone();
     let (arc_result, arb_result) = tokio::join!(
-        async move {
-            let diamond = predict_address(&arc_rpc, arc_factory, user).await?;
+        async {
+            let diamond = predict_address_with_provider(
+                arc_state.read_provider(),
+                arc_factory,
+                user,
+            )
+            .await?;
             let bal = arc_state
                 .usdc_balance(diamond)
                 .await
                 .unwrap_or(U256::ZERO);
             Ok::<_, anyhow::Error>((diamond, bal))
         },
-        async move {
-            let diamond = predict_address(&arbitrum_rpc, arb_factory, user).await?;
+        async {
+            let diamond = predict_address_with_provider(
+                arbitrum_state.read_provider(),
+                arb_factory,
+                user,
+            )
+            .await?;
             let bal = arbitrum_state
                 .usdc_balance(diamond)
                 .await

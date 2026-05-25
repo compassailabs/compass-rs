@@ -16,12 +16,29 @@ pub async fn predict_address(
     owner: Address,
 ) -> Result<Address> {
     let provider = ProviderBuilder::new().connect(rpc_url).await?;
+    predict_address_with_provider(&provider, factory, owner).await
+}
+
+/// Cached-provider variant — avoids per-call TCP/TLS handshake.
+/// Use this from hot paths (polled endpoints) with `state.arc.read_provider()`.
+pub async fn predict_address_with_provider<P: Provider>(
+    provider: &P,
+    factory: Address,
+    owner: Address,
+) -> Result<Address> {
     let f = ICompassAccountFactory::new(factory, provider);
     Ok(f.getAccountAddress(owner, U256::from(ACCOUNT_SALT)).call().await?)
 }
 
 pub async fn is_deployed(rpc_url: &str, addr: Address) -> Result<bool> {
     let provider = ProviderBuilder::new().connect(rpc_url).await?;
+    is_deployed_with_provider(&provider, addr).await
+}
+
+pub async fn is_deployed_with_provider<P: Provider>(
+    provider: &P,
+    addr: Address,
+) -> Result<bool> {
     let code = provider.get_code_at(addr).await?;
     Ok(!code.is_empty())
 }

@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use alloy::primitives::{Address, Bytes, FixedBytes, U256};
-use alloy::providers::{Provider, ProviderBuilder};
+use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::sol_types::SolCall;
 use anyhow::Result;
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::account::{
     ACCOUNT_SALT, arc_agent_selectors, arbitrum_agent_selectors, deploy, ensure_session,
-    is_deployed, predict_address, validate_init,
+    is_deployed_with_provider, predict_address_with_provider, validate_init,
 };
 use crate::api::error::ApiError;
 use crate::contracts::{IAaveFacet, IAccount4337Facet, IGatewayFacet, ISecurityFacet, InitArgs};
@@ -194,14 +194,14 @@ async fn compute_status(state: &AppState, user: Address) -> Result<SessionStatus
 
     let (arc_result, arb_result) = tokio::join!(
         probe_chain(
-            &cfg.arc_rpc_url,
+            state.arc.read_provider(),
             arc_factory,
             user,
             state.agent_address,
             arc_selector,
         ),
         probe_chain(
-            &cfg.arbitrum_sepolia_rpc_url,
+            state.arbitrum_sepolia.read_provider(),
             arb_factory,
             user,
             state.agent_address,
@@ -272,12 +272,11 @@ pub async fn authorize_arc_gateway_delegate(
 }
 
 async fn probe_session(
-    rpc: &str,
+    provider: &DynProvider,
     diamond: Address,
     agent: Address,
     selector: FixedBytes<4>,
 ) -> Result<(bool, u64)> {
-    let provider = ProviderBuilder::new().connect(rpc).await?;
     let sec = ISecurityFacet::new(diamond, provider);
     let valid = sec.isSessionValid(agent, selector).call().await?;
     let expiry: u64 = sec
@@ -290,16 +289,16 @@ async fn probe_session(
 }
 
 async fn probe_chain(
-    rpc: &str,
+    provider: &DynProvider,
     factory: Address,
     user: Address,
     agent: Address,
     selector: FixedBytes<4>,
 ) -> Result<(Address, bool, bool, u64)> {
-    let diamond = predict_address(rpc, factory, user).await?;
-    let live = is_deployed(rpc, diamond).await?;
+    let diamond = predict_address_with_provider(provider, factory, user).await?;
+    let live = is_deployed_with_provider(provider, diamond).await?;
     let (session_valid, expires) = if live {
-        probe_session(rpc, diamond, agent, selector)
+        probe_session(provider, diamond, agent, selector)
             .await
             .unwrap_or((false, 0))
     } else {

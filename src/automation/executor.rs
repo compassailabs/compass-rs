@@ -274,7 +274,7 @@ async fn cross_chain_arc_idle_to_arbitrum_aave(
     });
 
     tokio::time::sleep(Duration::from_secs(MINT_TO_SUPPLY_WAIT_SECS)).await;
-.
+
     let supply_call: Bytes = IAaveFacet::supplyAaveCall { amount: U256::MAX }
         .abi_encode()
         .into();

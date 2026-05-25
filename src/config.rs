@@ -40,8 +40,11 @@ pub struct AppConfig {
     pub automation_snapshot_interval_secs: u64,
 
     pub database_url: Option<String>,
+    pub db_schema: String,
 
     pub enable_debug_api: bool,
+
+    pub disable_automation: bool,
 }
 
 impl AppConfig {
@@ -94,8 +97,29 @@ impl AppConfig {
             .unwrap_or(60),
 
             database_url: env::var("DATABASE_URL").ok().filter(|s| !s.is_empty()),
+            db_schema: {
+                let schema = env::var("COMPASS_DB_SCHEMA")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "public".into());
+                if !schema
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    || schema.chars().next().is_some_and(|c| c.is_ascii_digit())
+                {
+                    return Err(anyhow!(
+                        "COMPASS_DB_SCHEMA={schema:?} must match [A-Za-z_][A-Za-z0-9_]*"
+                    ));
+                }
+                schema
+            },
 
             enable_debug_api: env::var("ENABLE_DEBUG_API")
+                .ok()
+                .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
+                .unwrap_or(false),
+
+            disable_automation: env::var("COMPASS_DISABLE_AUTOMATION")
                 .ok()
                 .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
                 .unwrap_or(false),

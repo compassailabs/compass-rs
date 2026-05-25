@@ -3,12 +3,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use alloy::primitives::{Address, U256};
-use alloy::providers::ProviderBuilder;
 use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::aave::pool::IPool;
-use crate::account::predict_address;
+use crate::account::predict_address_with_provider;
 use crate::automation::evaluator::Position;
 use crate::automation::policy::{ChainId, ProtocolId, VenueRef};
 use crate::automation::position::PositionFetcher;
@@ -31,9 +30,9 @@ impl PositionFetcher for RpcPositionFetcher {
         let aave_usdc = Address::from_str(&self.cfg.arbitrum_sepolia_aave_usdc)?;
 
         let arc_diamond =
-            predict_address(&self.cfg.arc_rpc_url, arc_factory, user).await?;
+            predict_address_with_provider(self.arc.read_provider(), arc_factory, user).await?;
         let arb_diamond =
-            predict_address(&self.cfg.arbitrum_sepolia_rpc_url, arb_factory, user).await?;
+            predict_address_with_provider(self.arb.read_provider(), arb_factory, user).await?;
 
         let arc_idle = self.arc.usdc_balance(arc_diamond).await?;
         let arb_idle = self.arb.usdc_balance(arb_diamond).await?;
@@ -93,11 +92,8 @@ async fn read_aave_position(
     aave_usdc: Address,
     owner: Address,
 ) -> Result<U256> {
-    let provider = ProviderBuilder::new()
-        .wallet(arb.signer.clone())
-        .connect(&arb.rpc_url)
-        .await?;
-    let pool = IPool::new(arb.aave_pool, provider.clone());
+    let provider = arb.read_provider();
+    let pool = IPool::new(arb.aave_pool, provider);
     let data = pool.getReserveData(aave_usdc).call().await?;
     let token = IERC20::new(data.aTokenAddress, provider);
     Ok(token.balanceOf(owner).call().await?)

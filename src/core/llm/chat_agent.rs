@@ -25,7 +25,10 @@ use crate::core::llm::types::{ChatMessage, CompletionRequest, ContentBlock, Role
 use crate::state::AppState;
 
 const MAX_TURNS: usize = 16;
-const MAX_TOKENS: u32 = 2048;
+const MAX_TOKENS: u32 = 8192;
+/// Extended-thinking budget for chat turns. Must be < MAX_TOKENS.
+/// Anthropic only — other providers ignore the field.
+const THINKING_BUDGET: u32 = 4096;
 
 fn chat_tools() -> Vec<ToolSchema> {
     vec![
@@ -148,16 +151,67 @@ async fn read_position(ctx: &ToolContext) -> Result<String> {
     match ctx.state.position_fetcher.fetch(ctx.user).await {
         Ok(pos) => {
             let _ = ctx.state.positions.put(ctx.user, pos.clone()).await;
-            Ok(serde_json::to_string(&pos)?)
+            Ok(format_position_for_llm(&pos))
         }
         Err(e) => match ctx.state.positions.get(ctx.user).await? {
-            Some(pos) => Ok(serde_json::to_string(&pos)?),
+            Some(pos) => Ok(format_position_for_llm(&pos)),
             None => Ok(json!({
                 "position": null,
                 "note": format!("fetch failed: {e}; no cached value")
             })
             .to_string()),
         },
+    }
+}
+
+/// Render Position as user-friendly JSON for the LLM. Replaces the raw
+/// `ProtocolId::Idle` → `"idle"` serialization (which the LLM echoes
+/// verbatim as a confusing "Idle on Arc: ..." in user replies) with plain
+/// language venues. Amounts are converted from 6-decimal base units to
+/// human USDC strings so the model doesn't surface raw integers either.
+fn format_position_for_llm(pos: &crate::automation::evaluator::Position) -> String {
+    use crate::automation::policy::{ChainId, ProtocolId};
+
+    let mut by_venue = Vec::new();
+    let mut total_6dec: u128 = 0;
+    for (venue, amount) in &pos.holdings {
+        let raw: u128 = amount.try_into().unwrap_or(0);
+        total_6dec = total_6dec.saturating_add(raw);
+        let chain_label = match venue.chain {
+            ChainId::Arc => "Arc",
+            ChainId::ArbitrumSepolia => "Arbitrum Sepolia",
+        };
+        let venue_label = match venue.protocol {
+            ProtocolId::Idle => "Wallet balance (not earning yield)",
+            ProtocolId::AaveV3 => "AAVE v3 (lending, earning yield)",
+        };
+        by_venue.push(json!({
+            "chain": chain_label,
+            "venue": venue_label,
+            "amount_usdc": format_usdc_6dec(raw),
+        }));
+    }
+
+    json!({
+        "total_usdc": format_usdc_6dec(total_6dec),
+        "by_venue": by_venue,
+        "actions_today": pos.actions_today,
+        "_note": "When summarising for the user, call `Wallet balance` plainly \
+                  (e.g. `~6.5 USDC sitting in your wallet`). NEVER use the word \
+                  `Idle` — it confuses non-technical users.",
+    })
+    .to_string()
+}
+
+fn format_usdc_6dec(raw: u128) -> String {
+    let whole = raw / 1_000_000;
+    let frac = raw % 1_000_000;
+    if frac == 0 {
+        format!("{whole}")
+    } else {
+        // Trim trailing zeros for compactness: 6.500000 → 6.5
+        let s = format!("{whole}.{frac:0>6}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 }
 
@@ -279,6 +333,7 @@ pub async fn run_chat_agent(
             tools: tools.clone(),
             max_tokens: MAX_TOKENS,
             temperature: None,
+            thinking_budget_tokens: Some(THINKING_BUDGET),
         };
         let resp = llm.complete(&req).await?;
 
@@ -314,7 +369,7 @@ pub async fn run_chat_agent(
                         content: output,
                     });
                 }
-                ContentBlock::ToolResult { .. } => {}
+                ContentBlock::ToolResult { .. } | ContentBlock::Thinking { .. } => {}
             }
         }
 
@@ -377,6 +432,7 @@ pub fn stream_chat_agent(
                 tools: tools.clone(),
                 max_tokens: MAX_TOKENS,
                 temperature: None,
+                thinking_budget_tokens: Some(THINKING_BUDGET),
             };
 
             let tagged = match llm.completion_stream(&req).await {
@@ -397,6 +453,7 @@ pub fn stream_chat_agent(
             let mut anthropic_acc = AnthropicAccumulator::new();
             let mut this_turn_tools: Vec<crate::core::llm::stream::ParsedToolCall> = Vec::new();
             let mut this_turn_text = String::new();
+            let mut this_turn_thinking = String::new();
 
             while let Some(chunk_res) = bytes_stream.next().await {
                 let chunk = match chunk_res {
@@ -421,8 +478,12 @@ pub fn stream_chat_agent(
                 };
 
                 for ev in events {
-                    if let StreamEvent::TextDelta { text } = &ev {
-                        this_turn_text.push_str(text);
+                    match &ev {
+                        StreamEvent::TextDelta { text } => this_turn_text.push_str(text),
+                        StreamEvent::ThinkingDelta { text } => {
+                            this_turn_thinking.push_str(text)
+                        }
+                        _ => {}
                     }
                     yield ev.into_sse_event();
                 }
@@ -485,6 +546,15 @@ pub fn stream_chat_agent(
             full_assistant_text.push_str(&this_turn_text);
 
             let mut assistant_blocks: Vec<ContentBlock> = Vec::new();
+            // Anthropic / DeepSeek both require thinking blocks to be sent
+            // back on subsequent turns. Order matters for Anthropic: thinking
+            // block must come BEFORE text/tool_use in the assistant message.
+            if !this_turn_thinking.is_empty() {
+                assistant_blocks.push(ContentBlock::Thinking {
+                    thinking: this_turn_thinking.clone(),
+                    signature: None,
+                });
+            }
             if !this_turn_text.is_empty() {
                 assistant_blocks.push(ContentBlock::Text {
                     text: this_turn_text.clone(),

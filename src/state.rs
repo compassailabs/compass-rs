@@ -4,7 +4,7 @@ use alloy::primitives::Address;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::Result;
 
-use sqlx::PgPool;
+use sqlx::{Executor, PgPool, postgres::PgPoolOptions};
 
 use crate::automation::audit::{AuditStore, InMemoryAuditStore, PostgresAuditStore};
 use crate::automation::funding::{FundingStore, InMemoryFundingStore, PostgresFundingStore};
@@ -74,8 +74,19 @@ impl AppState {
             Arc<dyn FundingStore>,
         ) = match &cfg.database_url {
             Some(url) => {
-                let pool = PgPool::connect(url).await?;
-                tracing::info!("connected to Postgres");
+                let schema = cfg.db_schema.clone();
+                let set_search_path = format!("SET search_path TO {schema}, public");
+                let pool = PgPoolOptions::new()
+                    .after_connect(move |conn, _meta| {
+                        let stmt = set_search_path.clone();
+                        Box::pin(async move {
+                            conn.execute(stmt.as_str()).await?;
+                            Ok(())
+                        })
+                    })
+                    .connect(url)
+                    .await?;
+                tracing::info!("connected to Postgres (search_path={schema}, public)");
                 (
                     Arc::new(PostgresPolicyStore::new(pool.clone())),
                     Arc::new(PostgresAuditStore::new(pool.clone())),

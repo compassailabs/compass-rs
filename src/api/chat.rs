@@ -17,7 +17,7 @@ use axum::{
 use futures::StreamExt;
 use serde::Deserialize;
 
-use crate::account::predict_address;
+use crate::account::predict_address_with_provider;
 use crate::api::error::ApiError;
 use crate::automation::chat_history::{
     ChatRole as DbChatRole, ChatTurnRow, NewChatTurn,
@@ -102,12 +102,17 @@ async fn build_live_state(state: &AppState, user: Address) -> Option<String> {
     let cfg = &state.cfg;
     let arc_factory = Address::from_str(&cfg.arc_factory).ok()?;
     let arb_factory = Address::from_str(&cfg.arbitrum_sepolia_factory).ok()?;
-    let arc_diamond = predict_address(&cfg.arc_rpc_url, arc_factory, user)
-        .await
-        .ok()?;
-    let arb_diamond = predict_address(&cfg.arbitrum_sepolia_rpc_url, arb_factory, user)
-        .await
-        .ok()?;
+    let arc_diamond =
+        predict_address_with_provider(state.arc.read_provider(), arc_factory, user)
+            .await
+            .ok()?;
+    let arb_diamond = predict_address_with_provider(
+        state.arbitrum_sepolia.read_provider(),
+        arb_factory,
+        user,
+    )
+    .await
+    .ok()?;
     let arc_bal = state
         .arc
         .usdc_balance(arc_diamond)

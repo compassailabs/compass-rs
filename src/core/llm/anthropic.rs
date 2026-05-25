@@ -64,8 +64,15 @@ impl LlmProvider for AnthropicProvider {
                     "input_schema": t.input_schema,
                 })
             }).collect(),
-            temperature: req.temperature,
+            // Extended thinking requires temperature to be omitted (defaults to 1).
+            temperature: if req.thinking_budget_tokens.is_some() { None } else { req.temperature },
             stream: None,
+            thinking: req.thinking_budget_tokens.map(|_| {
+                json!({ "type": "adaptive", "display": "summarized" })
+            }),
+            output_config: req.thinking_budget_tokens.map(|_| {
+                json!({ "effort": "high" })
+            }),
         };
 
         let resp = self
@@ -119,8 +126,14 @@ impl LlmProvider for AnthropicProvider {
                     })
                 })
                 .collect(),
-            temperature: req.temperature,
+            temperature: if req.thinking_budget_tokens.is_some() { None } else { req.temperature },
             stream: Some(true),
+            thinking: req.thinking_budget_tokens.map(|_| {
+                json!({ "type": "adaptive", "display": "summarized" })
+            }),
+            output_config: req.thinking_budget_tokens.map(|_| {
+                json!({ "effort": "high" })
+            }),
         };
 
         let resp = self
@@ -162,6 +175,16 @@ struct AnthropicRequest<'a> {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
+    /// On Opus 4.7 this must be `{type: "adaptive", display: "summarized"}`
+    /// — the old `{type: "enabled", budget_tokens}` 400s. Older models
+    /// still accept the old shape, but adaptive works on both, so we use
+    /// adaptive uniformly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Value>,
+    /// Adaptive thinking knob (replaces `budget_tokens`). Set when
+    /// thinking is enabled.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "output_config")]
+    output_config: Option<Value>,
 }
 
 #[derive(Serialize)]

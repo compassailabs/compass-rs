@@ -58,6 +58,28 @@ ANTHROPIC_API_KEY=...
 DATABASE_URL=postgres://...
 ```
 
+## Running Against a Shared Database
+
+Production and local dev can share the same Postgres instance by using
+separate schemas. Set:
+
+```
+COMPASS_DB_SCHEMA=dev              # default: public
+COMPASS_DISABLE_AUTOMATION=1       # stop local cron from racing prod
+```
+
+The backend issues `SET search_path TO <schema>, public` on every
+connection, so `SELECT … FROM policy` transparently hits `dev.policy`.
+
+One-time setup on the shared DB:
+
+```bash
+psql "$DATABASE_URL" -c "CREATE SCHEMA IF NOT EXISTS dev;"
+PGOPTIONS="--search_path=dev,public" sqlx migrate run
+```
+
+To wipe local state: `DROP SCHEMA dev CASCADE;`.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).
